@@ -10,7 +10,6 @@ defmodule ConsumerTest.Application do
     children = [
       # Starts a worker by calling: ConsumerTest.Worker.start_link(arg)
       # {ConsumerTest.Worker, arg}
-      ConsumerTest.Producer,
       ConsumerTest.Consumer
     ]
 
