@@ -5,6 +5,7 @@ defmodule ConsumerTest.Consumer do
   def start_link(_opts) do
     Broadway.start_link(__MODULE__,
       name: __MODULE__,
+      # This will also start the producer
       producer: [
         module: {ConsumerTest.Producer, []},
         concurrency: 1,

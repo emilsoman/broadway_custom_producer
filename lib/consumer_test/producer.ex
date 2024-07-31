@@ -1,12 +1,15 @@
 defmodule ConsumerTest.Producer do
   use GenStage
 
+  @buffer_size 10
+
   def start_link(_) do
     GenStage.start_link(__MODULE__, nil, name: __MODULE__)
   end
 
   def init(_) do
-    {:producer, %{items: [], pending_demand: 0, db_queue: Enum.to_list(1..17)}}
+    Process.send_after(self(), :poll, 2000)
+    {:producer, %{items: [], pending_demand: 0, db_queue: Enum.to_list(1..1000)}}
   end
 
   def handle_demand(new_demand, %{items: items, pending_demand: pending_demand} = state)
@@ -15,55 +18,43 @@ defmodule ConsumerTest.Producer do
     {to_send, rest} = Enum.split(items, demand)
 
     unfulfilled_demand = demand - length(to_send)
-    # If there's less items to send, we will dispatch after polling the DB
-    # We also make sure to increase the pending_demand by the unfulfilled demand
-    if unfulfilled_demand > 0 do
-      Process.send_after(self(), :poll, 2000)
-    end
+
+    IO.inspect("Handling new demand: #{new_demand}, unfulfilled_demand: #{unfulfilled_demand}")
 
     {:noreply, to_send, Map.merge(state, %{items: rest, pending_demand: unfulfilled_demand})}
   end
 
   def handle_info(:poll, state) do
-    case get_report_items(state) do
-      {[], state} ->
-        # No new items to send, we will poll again
-        # In prod, we can wait for atleast 5 minutes before polling again
-        Process.send_after(self(), :poll, 2000)
-        {:noreply, [], state}
+    {to_send, state} =
+      case get_report_items(state) do
+        {[], state} ->
+          # Nothing to send in this poll
+          {[], state}
 
-      {items, state} ->
-        # We have new items to send.
-        # We send the items and subtract from pending_demand.
-        # The rest of the items are added to the state, so when the next handle_demand is called
-        # and we have sufficient items to meet the demand, we dont have to poll.
-        {to_send, rest} = Enum.split(items, state.pending_demand)
-        unfulfilled_demand = state.pending_demand - length(to_send)
+        {items, state} ->
+          {to_send, rest} = Enum.split(items, state.pending_demand)
+          unfulfilled_demand = state.pending_demand - length(to_send)
+          state = Map.merge(state, %{items: rest, pending_demand: unfulfilled_demand})
 
-        if unfulfilled_demand > 0 do
-          Process.send_after(self(), :poll, 2000)
-        end
+          # We have items to send. Send upto pending_demand items
+          {to_send, state}
+      end
 
-        {:noreply, to_send, Map.merge(state, %{items: rest, pending_demand: unfulfilled_demand})}
-    end
+    # Query the DB after an interval
+    Process.send_after(self(), :poll, 2000)
+    {:noreply, to_send, state}
   end
 
   defp get_report_items(%{db_queue: db_queue} = state) do
-    items =
-      if Enum.empty?(db_queue) do
-        []
-      else
-        # in produze repo also we take a max of 10 items per db call
-        # it can be any number, but large enough to not make too many db calls
-        # and small enough to not block other nodes from getting data
-        # so as to maximize the parallelism of the system
+    # max we can fetch from the DB is the buffer size - the current items in the buffer
+    n = @buffer_size - length(state.items)
+    {items, rest} = Enum.split(db_queue, n)
+    seconds = DateTime.utc_now().second
 
-        Enum.take(db_queue, 10)
-      end
+    IO.inspect(
+      "Retrieved #{length(items)} items at #{inspect(seconds)}. Remaining items: #{length(rest)}. Pending demand: #{state.pending_demand}"
+    )
 
-    seconds = :second |> DateTime.utc_now() |> DateTime.to_unix() |> rem(100)
-    IO.inspect("Retrieved #{length(items)} items at #{inspect(seconds)}")
-
-    {items, %{state | db_queue: db_queue -- items}}
+    {items, %{state | db_queue: rest}}
   end
 end
